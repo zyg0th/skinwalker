@@ -1,0 +1,26 @@
+# build artifacts
+*.o
+*.obj
+*.so
+*.so.*
+*.a
+*.out
+*.exe
+
+# this project's own binaries
+skinwalker
+test/sample
+test/sample_pie
+test/dynsample
+
+# debug
+*.dSYM/
+core
+core.*
+vgcore.*
+
+# editors/OS
+.vscode/
+*.swp
+*~
+.DS_Store
