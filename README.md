@@ -30,6 +30,24 @@ wrapper in `main.c`. Two entry points:
   interpreter, if any) and transfers execution to it. Never returns on
   success.
 
+```c
+#include <unistd.h>
+#include "skinwalker.h"
+
+extern char **environ;
+
+int main(void)
+{
+    char *target_argv[] = {"/bin/ls", "-la", NULL};
+
+    // never returns on success — this process becomes /bin/ls -la.
+    skinwalker_exec(2, target_argv, environ);
+
+    // only reached if something failed before the jump.
+    _exit(1);
+}
+```
+
 ## test/
 
 Small ELF binaries used to exercise the loader:
