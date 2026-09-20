@@ -64,6 +64,9 @@ skinwalker
 test/sample
 test/sample_pie
 test/dynsample
+test/threadsample
+test/dynthreadsample
+test/forksample
 
 # editors/OS
 .vscode/

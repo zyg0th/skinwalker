@@ -7,7 +7,7 @@
 # resulting from it.
 
 CC       = gcc
-TESTS    = test/sample test/sample_pie test/dynsample
+TESTS    = test/sample test/sample_pie test/dynsample test/threadsample test/dynthreadsample test/forksample
 
 .PHONY: build test clean
 
@@ -28,12 +28,24 @@ test/sample_pie: test/sample.c
 test/dynsample: test/sample.c
 	$(CC) test/sample.c -o test/dynsample
 
+test/threadsample: test/threadsample.c
+	$(CC) test/threadsample.c -o test/threadsample -static -lpthread
+
+test/dynthreadsample: test/threadsample.c
+	$(CC) test/threadsample.c -o test/dynthreadsample -lpthread
+
+test/forksample: test/forksample.c
+	$(CC) test/forksample.c -o test/forksample -static
+
 # just builds the loader + the test binaries. doesn't run anything —
 # each test binary loops printing "hello world! pid=<pid>" once a
 # second, so to try one by hand:
 #   ./skinwalker test/sample
 #   ./skinwalker test/sample_pie
 #   ./skinwalker test/dynsample
+#   ./skinwalker test/threadsample
+#   ./skinwalker test/dynthreadsample
+#   ./skinwalker test/forksample
 test: build
 
 clean:
