@@ -2,6 +2,7 @@
 #define SKINWALKER_H
 
 #include <elf.h>
+#include <stddef.h>
 
 // everything we need to remember after loading an ELF into memory, so
 // we can build the auxv and decide where to jump.
@@ -16,12 +17,19 @@ typedef struct
     char interp_path[256]; // PT_INTERP path, if present
 } loaded_image_t;
 
-// loads an entire ELF into memory: maps every PT_LOAD with the correct
-// permissions. applies no relocation at all (reason explained in the
-// .c). returns 0 on success, -1 on error, filling *image_out.
+// loads an entire ELF straight from a buffer already in memory: maps
+// every PT_LOAD with the correct permissions. does not require the
+// binary to exist on disk anywhere. applies no relocation at all
+// (reason explained in the .c). returns 0 on success, -1 on error,
+// filling *image_out. `label` is only used in error messages.
 //
 // doesn't jump anywhere — only loads. useful on its own if you want to
 // inspect the result before deciding to execute it.
+int skinwalker_load_elf_mem(const void *data, size_t size, const char *label,
+                             loaded_image_t *image_out);
+
+// convenience wrapper: mmaps the file at `path` and loads it via
+// skinwalker_load_elf_mem.
 int skinwalker_load_elf(const char *path, loaded_image_t *image_out);
 
 // loads the binary at target_path (and its interpreter, if it needs

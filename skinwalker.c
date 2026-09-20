@@ -5,7 +5,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/auxv.h>
 
 // x86_64 page alignment. in production we'd use sysconf(_SC_PAGESIZE).
@@ -19,24 +21,24 @@
 //
 // checks the magic, class (64-bit), architecture (x86_64) and type
 // (ET_EXEC or ET_DYN). anything else is rejected.
-static int validate_elf_header(const char *path, const Elf64_Ehdr *elf_header)
+static int validate_elf_header(const char *label, const Elf64_Ehdr *elf_header)
 {
     if (memcmp(elf_header->e_ident, ELFMAG, SELFMAG) != 0)
     {
-        fprintf(stderr, "%s: ELF64 signature not found\n", path);
+        fprintf(stderr, "%s: ELF64 signature not found\n", label);
         return -1;
     }
 
     if (elf_header->e_ident[EI_CLASS] != ELFCLASS64 ||
         elf_header->e_machine != EM_X86_64)
     {
-        fprintf(stderr, "%s: not ELF64 x86_64\n", path);
+        fprintf(stderr, "%s: not ELF64 x86_64\n", label);
         return -1;
     }
 
     if (elf_header->e_type != ET_EXEC && elf_header->e_type != ET_DYN)
     {
-        fprintf(stderr, "%s: unsupported type (expected EXEC or DYN)\n", path);
+        fprintf(stderr, "%s: unsupported type (expected EXEC or DYN)\n", label);
         return -1;
     }
 
@@ -46,8 +48,10 @@ static int validate_elf_header(const char *path, const Elf64_Ehdr *elf_header)
 // ---- looks up the PT_INTERP entry in the program header table ----
 //
 // if present, copies the interpreter path (e.g. "/lib64/ld-linux-
-// x86-64.so.2") out and returns 1. if absent, returns 0.
-static int read_interpreter(FILE *elf_file, const Elf64_Phdr *program_header_table,
+// x86-64.so.2") out and returns 1. if absent, returns 0. reads straight
+// out of the in-memory buffer, no file I/O.
+static int read_interpreter(const unsigned char *data, size_t size,
+                             const Elf64_Phdr *program_header_table,
                              Elf64_Half entry_total, char *interp_path_out,
                              size_t out_buffer_size)
 {
@@ -61,9 +65,12 @@ static int read_interpreter(FILE *elf_file, const Elf64_Phdr *program_header_tab
         size_t string_len = program_header_entry->p_filesz;
         if (string_len >= out_buffer_size)
             string_len = out_buffer_size - 1;
+        if (program_header_entry->p_offset + string_len > size)
+            string_len = (program_header_entry->p_offset < size)
+                             ? size - program_header_entry->p_offset
+                             : 0;
 
-        fseek(elf_file, program_header_entry->p_offset, SEEK_SET);
-        fread(interp_path_out, 1, string_len, elf_file);
+        memcpy(interp_path_out, data + program_header_entry->p_offset, string_len);
         interp_path_out[string_len] = '\0';
 
         return 1;
@@ -152,11 +159,11 @@ static int calculate_load_bias(const Elf64_Ehdr *elf_header,
 
 // ---- maps a single PT_LOAD segment into memory ----
 //
-// reserves the page(s) with mmap (always RW, so the file contents can
-// be written next), copies the file bytes, and returns the final
-// protection this segment should have (applied later, by
-// apply_final_protections).
-static int map_load_segment(FILE *elf_file, const char *path,
+// reserves the page(s) with mmap (always RW, so the segment contents
+// can be written next), copies the bytes straight out of the in-memory
+// ELF buffer, and returns the final protection this segment should
+// have (applied later, by apply_final_protections).
+static int map_load_segment(const unsigned char *data, size_t size, const char *label,
                              const Elf64_Phdr *program_header_entry, Elf64_Addr load_bias,
                              Elf64_Addr *page_align_out, size_t *map_size_out,
                              int *protection_out)
@@ -186,18 +193,14 @@ static int map_load_segment(FILE *elf_file, const char *path,
 
     if (program_header_entry->p_filesz > 0)
     {
-        if (fseek(elf_file, program_header_entry->p_offset, SEEK_SET) != 0)
+        if (program_header_entry->p_offset + program_header_entry->p_filesz > size)
         {
-            perror("fseek");
+            fprintf(stderr, "%s: segment reaches past the end of the buffer\n", label);
             return -1;
         }
 
-        size_t bytes_read = fread((void *)vaddr, 1, program_header_entry->p_filesz, elf_file);
-        if (bytes_read != program_header_entry->p_filesz)
-        {
-            fprintf(stderr, "%s: incomplete segment read\n", path);
-            return -1;
-        }
+        memcpy((void *)vaddr, data + program_header_entry->p_offset,
+               program_header_entry->p_filesz);
     }
 
     *page_align_out = page_align;
@@ -231,7 +234,13 @@ static int apply_final_protections(const mapped_region_t *regions, int region_co
     return 0;
 }
 
-// ---- loads an entire ELF (maps every PT_LOAD) ----
+// ---- loads an entire ELF from an in-memory buffer (maps every PT_LOAD) ----
+//
+// this is the real workhorse: it never touches a file descriptor, only
+// the bytes already sitting at `data`. that means the ELF doesn't have
+// to come from disk at all — a buffer downloaded over the network,
+// decrypted in place, or assembled by hand works just as well as one
+// read from a file.
 //
 // no relocation is applied. that's intentional: both a normal ET_DYN
 // binary (PIE) and the dynamic linker (ld.so) carry inside themselves a
@@ -239,53 +248,48 @@ static int apply_final_protections(const mapped_region_t *regions, int region_co
 // in the second) that self-relocates as soon as execution reaches
 // e_entry. that's exactly what the real kernel does: it only maps the
 // segments, never touches relocation at all.
-int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
+//
+// `label` is only used in error messages (a path, a description,
+// whatever makes sense for the caller) — it plays no role in loading.
+int skinwalker_load_elf_mem(const void *data_v, size_t size, const char *label,
+                             loaded_image_t *image_out)
 {
+    const unsigned char *data = data_v;
     memset(image_out, 0, sizeof(*image_out));
 
-    FILE *elf_file = fopen(path, "rb");
-    if (!elf_file)
+    if (size < sizeof(Elf64_Ehdr))
     {
-        fprintf(stderr, "failed to open %s\n", path);
+        fprintf(stderr, "%s: buffer too small\n", label);
         return -1;
     }
 
     Elf64_Ehdr elf_header;
-    if (fread(&elf_header, sizeof(elf_header), 1, elf_file) != 1)
-    {
-        fprintf(stderr, "%s: file too small\n", path);
-        fclose(elf_file);
-        return -1;
-    }
+    memcpy(&elf_header, data, sizeof(elf_header));
 
-    if (validate_elf_header(path, &elf_header) != 0)
-    {
-        fclose(elf_file);
+    if (validate_elf_header(label, &elf_header) != 0)
         return -1;
-    }
 
     Elf64_Half entry_total = elf_header.e_phnum;
     Elf64_Half entry_size = elf_header.e_phentsize;
 
-    Elf64_Phdr *program_header_table = malloc(entry_total * sizeof(Elf64_Phdr));
-    fseek(elf_file, elf_header.e_phoff, SEEK_SET);
-    if (fread(program_header_table, sizeof(Elf64_Phdr), entry_total, elf_file) != entry_total)
+    size_t phdr_table_size = (size_t)entry_total * sizeof(Elf64_Phdr);
+    if (elf_header.e_phoff + phdr_table_size > size)
     {
-        fprintf(stderr, "%s: failed to read program headers\n", path);
-        free(program_header_table);
-        fclose(elf_file);
+        fprintf(stderr, "%s: program header table reaches past the buffer\n", label);
         return -1;
     }
 
+    Elf64_Phdr *program_header_table = malloc(phdr_table_size);
+    memcpy(program_header_table, data + elf_header.e_phoff, phdr_table_size);
+
     char interp_path[256] = {0};
-    int has_interp = read_interpreter(elf_file, program_header_table, entry_total,
+    int has_interp = read_interpreter(data, size, program_header_table, entry_total,
                                        interp_path, sizeof(interp_path));
 
     Elf64_Addr load_bias = 0;
     if (calculate_load_bias(&elf_header, program_header_table, entry_total, &load_bias) != 0)
     {
         free(program_header_table);
-        fclose(elf_file);
         return -1;
     }
 
@@ -305,9 +309,8 @@ int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
 
         if (region_count >= MAX_LOAD_REGIONS)
         {
-            fprintf(stderr, "%s: more PT_LOAD segments than the loader supports\n", path);
+            fprintf(stderr, "%s: more PT_LOAD segments than the loader supports\n", label);
             free(program_header_table);
-            fclose(elf_file);
             return -1;
         }
 
@@ -315,11 +318,10 @@ int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
         size_t map_size;
         int protection;
 
-        if (map_load_segment(elf_file, path, program_header_entry, load_bias,
+        if (map_load_segment(data, size, label, program_header_entry, load_bias,
                               &page_align, &map_size, &protection) != 0)
         {
             free(program_header_table);
-            fclose(elf_file);
             return -1;
         }
 
@@ -330,7 +332,6 @@ int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
     }
 
     free(program_header_table);
-    fclose(elf_file);
 
     if (apply_final_protections(regions, region_count) != 0)
         return -1;
@@ -345,6 +346,45 @@ int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
         memcpy(image_out->interp_path, interp_path, sizeof(interp_path));
 
     return 0;
+}
+
+// ---- convenience wrapper: loads an ELF straight from a path on disk ----
+//
+// mmaps the file read-only and hands the resulting view to
+// skinwalker_load_elf_mem — no heap copy of the whole file, and the
+// source mapping is dropped again once loading is done (the segment
+// contents were already copied out into their own PT_LOAD mappings by
+// then). this is purely a convenience: skinwalker doesn't require the
+// binary to live on disk at all, see skinwalker_load_elf_mem above.
+int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+    {
+        fprintf(stderr, "failed to open %s\n", path);
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0)
+    {
+        perror("fstat");
+        close(fd);
+        return -1;
+    }
+
+    void *file_view = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd); // the mapping stays valid after the fd is closed
+    if (file_view == MAP_FAILED)
+    {
+        perror("mmap file");
+        return -1;
+    }
+
+    int rc = skinwalker_load_elf_mem(file_view, (size_t)st.st_size, path, image_out);
+
+    munmap(file_view, (size_t)st.st_size);
+    return rc;
 }
 
 // ---- freeing the loader's own memory before the jump ----
