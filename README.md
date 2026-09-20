@@ -22,13 +22,19 @@ make
 ## as a library
 
 `skinwalker.c`/`skinwalker.h` can be used standalone, without the CLI
-wrapper in `main.c`. Two entry points:
+wrapper in `main.c`. Entry points:
 
-- `skinwalker_load_elf(path, &image)` — just maps an ELF into memory,
-  never jumps. Useful if you want to inspect the result first.
+- `skinwalker_load_elf_mem(data, size, label, &image)` — maps an ELF
+  straight out of a buffer already in memory. Never touches a file
+  descriptor. The binary doesn't have to exist on disk at all — a
+  downloaded blob, a decrypted payload, whatever's already in RAM works.
+  `label` is only used in error messages. Doesn't jump anywhere, only
+  loads — useful if you want to inspect the result first.
+- `skinwalker_load_elf(path, &image)` — convenience wrapper: mmaps the
+  file at `path` and hands it to `skinwalker_load_elf_mem`.
 - `skinwalker_exec(argc, argv, envp)` — loads `argv[0]` (and its
-  interpreter, if any) and transfers execution to it. Never returns on
-  success.
+  interpreter, if any) from disk and transfers execution to it. Never
+  returns on success.
 
 ```c
 #include <unistd.h>
@@ -46,6 +52,21 @@ int main(void)
     // only reached if something failed before the jump.
     _exit(1);
 }
+```
+
+Loading straight from a buffer, no path involved:
+
+```c
+#include "skinwalker.h"
+
+// buf/len come from wherever: a download, a decrypted blob, bytes
+// assembled by hand — nothing here ever touches disk.
+loaded_image_t image;
+if (skinwalker_load_elf_mem(buf, len, "payload", &image) != 0)
+{
+    // handle error
+}
+// image.entry, image.phdr_addr, etc. are now ready to use.
 ```
 
 ## test/
