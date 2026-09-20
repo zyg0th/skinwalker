@@ -1,5 +1,25 @@
+// skinwalker - userland execve()-like ELF loader
+// Copyright (C) 2025  zygoth <core.zyg0th@gmail.com>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+// Written for exploratory/educational purposes. No responsibility is
+// taken for how this code is used downstream.
+
 #include "skinwalker.h"
 
+#include <elf.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +29,20 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/auxv.h>
+
+// everything we need to remember after loading an ELF into memory, so
+// we can build the auxv and decide where to jump. internal only — the
+// public API (skinwalker_exec) never hands this back to the caller.
+typedef struct
+{
+    Elf64_Addr load_bias; // 0 for ET_EXEC, chosen address for ET_DYN
+    Elf64_Addr entry;      // e_entry already shifted by load_bias
+    Elf64_Addr phdr_addr;  // address of the program header table in memory
+    Elf64_Half phentsize;
+    Elf64_Half phnum;
+    int has_interp;
+    char interp_path[256]; // PT_INTERP path, if present
+} loaded_image_t;
 
 // x86_64 page alignment. in production we'd use sysconf(_SC_PAGESIZE).
 #define PAGE_SIZE 4096ul
@@ -251,7 +285,7 @@ static int apply_final_protections(const mapped_region_t *regions, int region_co
 //
 // `label` is only used in error messages (a path, a description,
 // whatever makes sense for the caller) — it plays no role in loading.
-int skinwalker_load_elf_mem(const void *data_v, size_t size, const char *label,
+static int skinwalker_load_elf(const void *data_v, size_t size, const char *label,
                              loaded_image_t *image_out)
 {
     const unsigned char *data = data_v;
@@ -351,12 +385,12 @@ int skinwalker_load_elf_mem(const void *data_v, size_t size, const char *label,
 // ---- convenience wrapper: loads an ELF straight from a path on disk ----
 //
 // mmaps the file read-only and hands the resulting view to
-// skinwalker_load_elf_mem — no heap copy of the whole file, and the
+// skinwalker_load_elf — no heap copy of the whole file, and the
 // source mapping is dropped again once loading is done (the segment
 // contents were already copied out into their own PT_LOAD mappings by
 // then). this is purely a convenience: skinwalker doesn't require the
-// binary to live on disk at all, see skinwalker_load_elf_mem above.
-int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
+// binary to live on disk at all, see skinwalker_load_elf above.
+static int skinwalker_load_elf_file(const char *path, loaded_image_t *image_out)
 {
     int fd = open(path, O_RDONLY);
     if (fd < 0)
@@ -381,7 +415,7 @@ int skinwalker_load_elf(const char *path, loaded_image_t *image_out)
         return -1;
     }
 
-    int rc = skinwalker_load_elf_mem(file_view, (size_t)st.st_size, path, image_out);
+    int rc = skinwalker_load_elf(file_view, (size_t)st.st_size, path, image_out);
 
     munmap(file_view, (size_t)st.st_size);
     return rc;
@@ -764,15 +798,16 @@ static int build_stack_and_jump(int target_argc, char **target_argv, char **envp
     __builtin_unreachable();
 }
 
-int skinwalker_exec(int argc, char **argv, char **envp)
+int skinwalker_exec(const void *data, size_t size, int argc, char **argv, char **envp)
 {
-    if (argc < 1 || argv == NULL || argv[0] == NULL)
+    if (data == NULL || size == 0 || argc < 1 || argv == NULL || argv[0] == NULL)
         return -1;
 
-    const char *target_path = argv[0];
-
+    // argv[0] is used only as a label for error messages here — the
+    // actual bytes to load come from `data`/`size`, supplied by the
+    // caller (read from disk, downloaded, decrypted, whatever).
     loaded_image_t target_image;
-    if (skinwalker_load_elf(target_path, &target_image) != 0)
+    if (skinwalker_load_elf(data, size, argv[0], &target_image) != 0)
         return -1;
 
     // if the target has a PT_INTERP, we need to load ld.so too, and
@@ -783,7 +818,7 @@ int skinwalker_exec(int argc, char **argv, char **envp)
 
     if (use_interp)
     {
-        if (skinwalker_load_elf(target_image.interp_path, &interp_image) != 0)
+        if (skinwalker_load_elf_file(target_image.interp_path, &interp_image) != 0)
             return -1;
     }
 

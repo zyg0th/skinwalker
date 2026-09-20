@@ -12,29 +12,44 @@ stack), so the result looks like a brand new process: same PID, the
 loader's shell on the outside (`/proc/PID/exe`, name in `ps`), the
 target's contents on the inside.
 
-## build
+**Disclaimer**: built for exploratory/educational purposes. Licensed
+under GPLv3 (see `LICENSE`), which comes with no warranty of any kind.
+No responsibility is taken for how this code is used or any damage
+resulting from its use.
 
+## what this is
+
+`skinwalker.c`/`skinwalker.h` is the library. That's the actual
+project — everything else (`main.c`, the HTTPS download path,
+`mock_server/`) is just a CLI wrapper built on top of it, to
+demonstrate the library being used. Any real integration should
+link against `skinwalker.c` directly and call the API below; it
+doesn't need `main.c` at all.
+
+## API
+
+The whole public surface is one function:
+
+```c
+int skinwalker_exec(const void *data, size_t size, int argc, char **argv, char **envp);
 ```
-make
-./skinwalker <program> [args...]
-```
 
-## as a library
+Loads the ELF already sitting at `data`/`size` — any origin: a file
+you read yourself, a download, a decrypted blob, doesn't matter — and
+transfers execution to it, resolving its PT_INTERP (loaded from disk,
+since that's the system's `ld.so`) if it needs one.
 
-`skinwalker.c`/`skinwalker.h` can be used standalone, without the CLI
-wrapper in `main.c`. Entry points:
+**Never returns on success.** The process becomes the target: same
+PID, loader's own memory wiped. Only returns (with `-1`) if something
+fails before the jump — invalid image, out of memory, etc.
 
-- `skinwalker_load_elf_mem(data, size, label, &image)` — maps an ELF
-  straight out of a buffer already in memory. Never touches a file
-  descriptor. The binary doesn't have to exist on disk at all — a
-  downloaded blob, a decrypted payload, whatever's already in RAM works.
-  `label` is only used in error messages. Doesn't jump anywhere, only
-  loads — useful if you want to inspect the result first.
-- `skinwalker_load_elf(path, &image)` — convenience wrapper: mmaps the
-  file at `path` and hands it to `skinwalker_load_elf_mem`.
-- `skinwalker_exec(argc, argv, envp)` — loads `argv[0]` (and its
-  interpreter, if any) from disk and transfers execution to it. Never
-  returns on success.
+- `argv[0]` is used only as a label in error messages.
+- `argv[1..argc-1]` are forwarded as the target's own argv
+  (`argv[argc]` must be NULL, same convention as `main`'s argv).
+
+Getting bytes onto disk-or-not is entirely the caller's job — read a
+file, download over HTTPS, decrypt something, whatever. skinwalker
+only cares about the buffer you hand it.
 
 ```c
 #include <unistd.h>
@@ -44,30 +59,36 @@ extern char **environ;
 
 int main(void)
 {
+    // caller's responsibility: get the bytes from wherever.
+    unsigned char *buf; size_t len;
+    read_file_to_mem("/bin/ls", &buf, &len); // or download, decrypt, etc.
+
     char *target_argv[] = {"/bin/ls", "-la", NULL};
 
     // never returns on success — this process becomes /bin/ls -la.
-    skinwalker_exec(2, target_argv, environ);
+    skinwalker_exec(buf, len, 2, target_argv, environ);
 
     // only reached if something failed before the jump.
     _exit(1);
 }
 ```
 
-Loading straight from a buffer, no path involved:
+## build
 
-```c
-#include "skinwalker.h"
-
-// buf/len come from wherever: a download, a decrypted blob, bytes
-// assembled by hand — nothing here ever touches disk.
-loaded_image_t image;
-if (skinwalker_load_elf_mem(buf, len, "payload", &image) != 0)
-{
-    // handle error
-}
-// image.entry, image.phdr_addr, etc. are now ready to use.
 ```
+make
+./skinwalker <program-path-or-https-url> [args...]
+```
+
+`main.c` is the example/demo wrapper: it reads a local path or
+downloads over HTTPS into a buffer, then calls `skinwalker_exec`.
+It's a reference for how to feed the library, not part of the API
+itself.
+
+## mock_server/
+
+A local HTTPS test server (self-signed cert), used to exercise the
+download-and-exec path in `main.c` without needing a real remote host.
 
 ## test/
 
