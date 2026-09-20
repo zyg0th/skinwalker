@@ -86,7 +86,11 @@ itself.
 
 ## test/
 
-Small ELF binaries used to exercise the loader:
-- `sample.c` — static binary, loops printing its own PID.
-- `dynsample.c` — same, but dynamically linked (exercises the
-  PT_INTERP / ld.so path).
+Small ELF binaries used to exercise the loader, to test the loader.
+
+`sample.c` — loops printing its own PID. Built three ways by the
+makefile to exercise different loader paths:
+- `sample` — static (`-static`)
+- `sample_pie` — static PIE (`-static-pie`, ET_DYN)
+- `dynsample` — dynamically linked (default flags, exercises the
+  PT_INTERP / ld.so path)

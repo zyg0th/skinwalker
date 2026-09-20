@@ -25,8 +25,8 @@ test/sample: test/sample.c
 test/sample_pie: test/sample.c
 	$(CC) test/sample.c -o test/sample_pie -static-pie
 
-test/dynsample: test/dynsample.c
-	$(CC) test/dynsample.c -o test/dynsample
+test/dynsample: test/sample.c
+	$(CC) test/sample.c -o test/dynsample
 
 # just builds the loader + the test binaries. doesn't run anything —
 # each test binary loops printing "hello world! pid=<pid>" once a
