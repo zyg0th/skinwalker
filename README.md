@@ -19,6 +19,17 @@ make
 ./skinwalker <program> [args...]
 ```
 
+## as a library
+
+`skinwalker.c`/`skinwalker.h` can be used standalone, without the CLI
+wrapper in `main.c`. Two entry points:
+
+- `skinwalker_load_elf(path, &image)` — just maps an ELF into memory,
+  never jumps. Useful if you want to inspect the result first.
+- `skinwalker_exec(argc, argv, envp)` — loads `argv[0]` (and its
+  interpreter, if any) and transfers execution to it. Never returns on
+  success.
+
 ## test/
 
 Small ELF binaries used to exercise the loader:
