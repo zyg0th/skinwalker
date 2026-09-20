@@ -52,20 +52,28 @@ only cares about the buffer you hand it.
 
 ```c
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include "skinwalker.h"
 
 extern char **environ;
 
 int main(void)
 {
-    // caller's responsibility: get the bytes from wherever.
-    unsigned char *buf; size_t len;
-    read_file_to_mem("/bin/ls", &buf, &len); // or download, decrypt, etc.
+    // caller's responsibility: get the bytes from wherever. this
+    // example just mmaps a local file; could just as well be a
+    // downloaded or decrypted buffer instead.
+    int fd = open("/bin/ls", O_RDONLY);
+    struct stat st;
+    fstat(fd, &st);
+    void *buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
 
     char *target_argv[] = {"/bin/ls", "-la", NULL};
 
     // never returns on success — this process becomes /bin/ls -la.
-    skinwalker_exec(buf, len, 2, target_argv, environ);
+    skinwalker_exec(buf, st.st_size, 2, target_argv, environ);
 
     // only reached if something failed before the jump.
     _exit(1);
