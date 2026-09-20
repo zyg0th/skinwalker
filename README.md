@@ -20,11 +20,10 @@ resulting from its use.
 ## what this is
 
 `skinwalker.c`/`skinwalker.h` is the library. That's the actual
-project — everything else (`main.c`, the HTTPS download path,
-`mock_server/`) is just a CLI wrapper built on top of it, to
-demonstrate the library being used. Any real integration should
-link against `skinwalker.c` directly and call the API below; it
-doesn't need `main.c` at all.
+project — everything else (`main.c`, the HTTPS download path) is
+just a CLI wrapper built on top of it, to demonstrate the library
+being used. Any real integration should link against `skinwalker.c`
+directly and call the API below; it doesn't need `main.c` at all.
 
 ## API
 
@@ -84,11 +83,6 @@ make
 downloads over HTTPS into a buffer, then calls `skinwalker_exec`.
 It's a reference for how to feed the library, not part of the API
 itself.
-
-## mock_server/
-
-A local HTTPS test server (self-signed cert), used to exercise the
-download-and-exec path in `main.c` without needing a real remote host.
 
 ## test/
 
