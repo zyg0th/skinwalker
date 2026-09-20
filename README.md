@@ -1,5 +1,7 @@
 # skinwalker
 
+A vibe-coded, userland execve()-like ELF loader.
+
 A hand-rolled ELF loader: maps a binary (and ld.so, if needed) straight
 into the current process's memory, builds a fresh stack/auxv from
 scratch, and jumps to the entry point — without going through
