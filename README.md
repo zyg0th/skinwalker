@@ -4,7 +4,7 @@ A vibe-coded, userland execve()-like ELF loader.
 
 Maps a binary (and ld.so, if needed) straight
 into the current process's memory, builds a fresh stack/auxv from
-scratch, and jumps to the entry point — without going through
+scratch, and jumps to the entry point, without going through
 `execve`.
 
 After the jump, it wipes its own memory (code, most of the heap, old
